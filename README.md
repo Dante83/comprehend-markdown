@@ -1,7 +1,8 @@
 # comprehend-markdown
 
-*You touch the scroll and utter the incantation. About an hour later (per
-document), you comprehend Markdown in any language.*
+*You touch the scroll and utter the incantation. Minutes to an hour later
+(per document, depending on the scroll's heft), you comprehend Markdown in
+any language.*
 
 An MCP server that translates a project's `README.md` into other languages,
 plus a standalone pipeline that runs a writer/reviewer loop against it using
@@ -120,8 +121,9 @@ Bahasa Indonesia, اردو, Naijá — edit `LANGUAGES` in `main.py` to change),
 calling LM Studio's OpenAI-compatible endpoint directly for the
 writer/reviewer turns and spawning its own internal copy of `server.py`
 over stdio to do the file I/O. Useful for batch-translating without driving
-it through the LM Studio UI. Budget roughly an hour per document on a local
-model.
+it through the LM Studio UI. Runtime scales with document size on a local
+model — minutes for a small README, up to an hour or so for a large
+chunked one.
 
 Languages that already have a `docs/<language>/README.md` aren't
 re-translated from scratch: the reviewer compares the existing translation
