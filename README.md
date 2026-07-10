@@ -1,7 +1,7 @@
 # comprehend-markdown
 
-*You touch the scroll and utter the incantation. For the next 8 hours (per
-document, roughly), you comprehend Markdown in any language.*
+*You touch the scroll and utter the incantation. About an hour later (per
+document), you comprehend Markdown in any language.*
 
 An MCP server that translates a project's `README.md` into other languages,
 plus a standalone pipeline that runs a writer/reviewer loop against it using
@@ -10,9 +10,15 @@ a local LM Studio model.
 For any target project, it expects (and creates as needed):
 
 ```
-<project-root>/README.md              the canonical English source
-<project-root>/docs/<lang>/README.md  translated versions, one per language
+<project-root>/docs/English/README.md  the canonical English source
+<project-root>/docs/<lang>/README.md   translated versions, one per language
+<project-root>/README.md               language-picker landing page (generated)
 ```
+
+A project that hasn't been migrated yet — English source still at the root —
+works too: the root `README.md` is used as the source, and at the end of a
+`pipeline` run it is moved into `docs/English/` and replaced by a short
+generated landing page that links every available translation.
 
 ## Setup
 
@@ -65,9 +71,19 @@ This is what an MCP host (e.g. LM Studio) should point its server
 It exposes:
 
 - **tool** `write_readme(language, content)` — writes `docs/<language>/README.md`
-- **resource** `docs://readme` — the English source
+- **tool** `write_directory_readme(content)` — writes the root `README.md`
+  (the language-picker landing page)
+- **resource** `docs://readme` — the English source (`docs/English/README.md`,
+  falling back to the root `README.md`)
 - **resource** `docs://readme/{language}` — the existing translation, if any
-- **prompts** `translate_readme`, `critique_translation`, `rewrite_translation`
+- **resource** `docs://dir_readme` — the root `README.md`
+- **prompts** `translate_readme`, `critique_translation`,
+  `rewrite_translation` — the fresh-translation loop
+- **prompts** `check_existing_readme`, `rewrite_from_existing_translation` —
+  the update path: compare an existing translation against the current
+  English source and patch it with minimal changes
+- **prompt** `create_docs_language_directory` — build the root
+  language-picker page from the list of available translations
 
 The host's own model drives the tool calls; this server just provides the
 file I/O and prompt templates.
@@ -98,11 +114,26 @@ project you mean to translate.
 ### `pipeline` — standalone, no MCP host
 
 Runs the full translate → critique → revise loop itself for a fixed list of
-languages (Spanish, French, Japanese, German — edit `LANGUAGES` in
-`main.py` to change), calling LM Studio's OpenAI-compatible endpoint
-directly for the writer/reviewer turns and spawning its own internal copy
-of `server.py` over stdio to do the file I/O. Useful for batch-translating
-without driving it through the LM Studio UI.
+18 languages (Deutsch, Español, Français, Italiano, Polski, Português,
+Русский, Tiếng Việt, ไทย, 中文, 日本語, 한국어, العربية, हिन्दी, বাংলা,
+Bahasa Indonesia, اردو, Naijá — edit `LANGUAGES` in `main.py` to change),
+calling LM Studio's OpenAI-compatible endpoint directly for the
+writer/reviewer turns and spawning its own internal copy of `server.py`
+over stdio to do the file I/O. Useful for batch-translating without driving
+it through the LM Studio UI. Budget roughly an hour per document on a local
+model.
+
+Languages that already have a `docs/<language>/README.md` aren't
+re-translated from scratch: the reviewer compares the existing translation
+against the current English source and, only if something changed, the
+writer patches it with minimal edits. Up-to-date translations are skipped
+entirely, so re-running the pipeline after a README edit only redoes the
+stale parts.
+
+After the per-language work, the run finishes by (if needed) moving a
+root-level English `README.md` into `docs/English/` and regenerating the
+root `README.md` as a short language-picker page linking every non-empty
+translation.
 
 Requires LM Studio's local server running (see `config.json`) with any chat
 model loaded — the pipeline drives the model with plain text completions and
