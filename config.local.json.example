@@ -1,0 +1,10 @@
+{
+  "lm_studio_url": "http://localhost:1234/v1",
+  "model_name": "model-identifier",
+  "api_key": "lm-studio",
+  "request_timeout_seconds": 1800,
+  "max_tokens": 24576,
+  "chunk_translation": true,
+  "chunk_threshold_chars": 12000,
+  "review_sections": true
+}
