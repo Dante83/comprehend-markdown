@@ -11,14 +11,15 @@ Usage:
     python main.py <absolute-path-to-project-folder>
     ./run.sh pipeline <absolute-path-to-project-folder>
 
-Configuration (LM Studio URL / model name) is read from config.json, with
-any keys in config.local.json (gitignored) taking priority -- copy
-config.local.json.example to config.local.json to override locally without
-touching the committed defaults.
+Configuration (source/target languages, LM Studio URL / model name) is read
+from config.json, with any keys in config.local.json (gitignored) taking
+priority -- copy config.local.json.example to config.local.json to override
+locally without touching the committed defaults. Set source_language to
+translate *out of* a language other than English, and target_languages to pick
+what it fans out into (see config.py).
 """
 
 import asyncio
-import json
 import re
 import sys
 from pathlib import Path
@@ -27,19 +28,11 @@ import openai
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
+from config import load_config, get_source_language, get_target_languages
+
 # --- Configuration ---
 SCRIPT_DIR = Path(__file__).resolve().parent
 SERVER_SCRIPT = str(SCRIPT_DIR / "server.py")
-
-
-def load_config():
-    config = {}
-    for filename in ("config.json", "config.local.json"):
-        path = SCRIPT_DIR / filename
-        if path.is_file():
-            config.update(json.loads(path.read_text(encoding="utf-8")))
-    return config
-
 
 _config = load_config()
 LM_STUDIO_URL = _config.get("lm_studio_url", "http://localhost:1234/v1")
@@ -76,9 +69,12 @@ if not Path(PROJECT_ROOT).is_dir():
     print(f"Not a directory: {PROJECT_ROOT}", file=sys.stderr)
     sys.exit(1)
 
-LANGUAGES = ["Deutsch", "Español", "Français", "Italiano", "Polski", "Português",
-"Русский", "Tiếng Việt", "ไทย", "中文", "日本語", "한국어",
-"العربية", "हिन्दी", "বাংলা", "Bahasa Indonesia", "اردو", "Naijá"]
+# What we translate *out of* and *into*, both from config (config.py). Change
+# source_language to start from Chinese/Indonesian/etc. instead of English, and
+# target_languages to pick the fan-out set. Any target equal to the source is
+# dropped by get_target_languages, so self-translation can't happen.
+SOURCE_LANGUAGE = get_source_language(_config)
+LANGUAGES = get_target_languages(_config)
 MAX_ITERATIONS = 3  # Don't let them argue forever! 😅
 
 client = openai.OpenAI(
@@ -102,8 +98,8 @@ def _translator_rules(target_lang):
   YAML front matter, HTML comments, placeholder variables,
   and markdown syntax/structure (headers, lists, tables).
 - Translate everything else naturally — prose, headers, alt text, comments in
-  plain English within docs. Avoid literal/calque translation; write like a
-  native technical writer in {target_lang} would.
+  plain {SOURCE_LANGUAGE} within docs. Avoid literal/calque translation; write
+  like a native technical writer in {target_lang} would.
 - If a passage is clearly poetic, playful, or personal in tone (not pure
   technical instruction), prioritize rhythm, feeling, and voice over literal
   word-for-word accuracy. You have license to take translator's liberties there.
@@ -116,8 +112,8 @@ def _translator_rules(target_lang):
   extensions, and anything inside a real code block stay untouched. If you
   are not certain a token is purely descriptive, leave it as-is.
 - If the source has a table of tags, function names, or other identifiers
-  that must stay in English, keep the identifier exactly as written but add
-  a short {target_lang} gloss next to it (a new column, or a parenthetical)
+  that must stay in their original form, keep the identifier exactly as written
+  but add a short {target_lang} gloss next to it (a new column, or a parenthetical)
   so a reader knows what it means at a glance -- never rename the identifier
   itself."""
 
@@ -129,7 +125,7 @@ def _text_writer_prompt(target_lang, scope_note=""):
     is what truncates (and produces malformed JSON) on local reasoning models."""
     scope = f"\n{scope_note}\n" if scope_note else "\n"
     return f"""You are an expert technical translator specializing in software documentation,
-translating from american english to {target_lang}. You also have strong instincts
+translating from {SOURCE_LANGUAGE} to {target_lang}. You also have strong instincts
 for literary/poetic translation when the text calls for it.
 {scope}
 {_translator_rules(target_lang)}
@@ -154,7 +150,7 @@ def get_chunk_writer_prompt(target_lang):
 
 
 def get_reviewer_prompt(target_lang):
-    return f"""You are a bilingual technical editor reviewing a translation from american english
+    return f"""You are a bilingual technical editor reviewing a translation from {SOURCE_LANGUAGE}
 to {target_lang} for a README/documentation file.
 
 Evaluate:
@@ -171,7 +167,7 @@ Evaluate:
    may be translated for clarity, but nothing that must be typed verbatim
    (code identifiers, CLI flags, env vars, file extensions) was renamed.
 7. Glossed identifiers — where the source keeps a tag/function name in
-   English inside a table, does the translation add a short {target_lang}
+   its original form inside a table, does the translation add a short {target_lang}
    gloss next to it rather than translating or dropping the identifier?
 
 If the translation is publication-ready, respond with:
@@ -204,9 +200,9 @@ RULES:
 
 
 def get_update_reviewer_prompt(target_lang):
-    return f"""You are a bilingual technical editor reviewing a translation from american english
+    return f"""You are a bilingual technical editor reviewing a translation from {SOURCE_LANGUAGE}
 to {target_lang} for a README/documentation file. This is an existing document so we are checking if
-we need to change it to match potential changes in the english file.
+we need to change it to match potential changes in the {SOURCE_LANGUAGE} file.
 
 Evaluate:
 1. Contents - are there any bits of text or content that need to be added,
@@ -219,7 +215,7 @@ Evaluate:
    may be translated for clarity, but nothing that must be typed verbatim
    (code identifiers, CLI flags, env vars, file extensions) was renamed.
 5. Glossed identifiers — where the source keeps a tag/function name in
-   English inside a table, does the translation add a short {target_lang}
+   its original form inside a table, does the translation add a short {target_lang}
    gloss next to it rather than translating or dropping the identifier?
 
 If the translation does not require any changes, respond with:
@@ -313,12 +309,13 @@ def parse_summary(text):
 
 
 def read_source_readme_text():
-    """Mirror the server's source-README resolution: prefer docs/English, fall
-    back to the project-root README.md. Returns '' if neither exists."""
-    docs_english = Path(PROJECT_ROOT) / "docs" / "English" / "README.md"
+    """Mirror the server's source-README resolution: prefer
+    docs/<source_language>, fall back to the project-root README.md. Returns ''
+    if neither exists."""
+    docs_source = Path(PROJECT_ROOT) / "docs" / SOURCE_LANGUAGE.strip().title() / "README.md"
     root = Path(PROJECT_ROOT) / "README.md"
-    if docs_english.is_file():
-        return docs_english.read_text(encoding="utf-8")
+    if docs_source.is_file():
+        return docs_source.read_text(encoding="utf-8")
     if root.is_file():
         return root.read_text(encoding="utf-8")
     return ""
@@ -401,10 +398,10 @@ def rewrite_whole_document(target_lang, source_text, current_target, critique):
     return the text (the orchestrator saves it)."""
     user_prompt = (
         f"Revise the {target_lang} translation below so it fully addresses the "
-        f"editor's feedback while staying faithful to the English source.\n\n"
+        f"editor's feedback while staying faithful to the {SOURCE_LANGUAGE} source.\n\n"
         f"Return ONLY the revised Markdown -- no preamble, no explanation, and do "
         f"not wrap the whole document in a code fence.\n\n"
-        f"<english_source>\n{source_text}\n</english_source>\n\n"
+        f"<source>\n{source_text}\n</source>\n\n"
         f"<current_translation>\n{current_target}\n</current_translation>\n\n"
         f"<editor_feedback>\n{critique}\n</editor_feedback>"
     )
@@ -415,16 +412,16 @@ def rewrite_whole_document(target_lang, source_text, current_target, critique):
 
 
 def review_section(target_lang, source_section, translated_section):
-    """Critique one translated section against its English source. Reuses the
+    """Critique one translated section against its source-language original. Reuses the
     whole-document reviewer prompt (same verdict/feedback format) but scopes the
     task to a single section so it doesn't flag a 'missing' title/intro/closing
     that lives in a different section."""
     user_prompt = (
-        "Review this translated section against its English source. It is ONE "
+        f"Review this translated section against its {SOURCE_LANGUAGE} source. It is ONE "
         "section of a larger README translated section by section -- judge only "
         "this section, and do not flag a missing document title, intro, or closing "
         "that belongs to other sections.\n\n"
-        f"<english_source>\n{source_section}\n</english_source>\n\n"
+        f"<source>\n{source_section}\n</source>\n\n"
         f"<translation>\n{translated_section}\n</translation>"
     )
     return complete(
@@ -437,11 +434,11 @@ def rewrite_section(target_lang, source_section, current_section, critique):
     critique. Returns the revised section text."""
     user_prompt = (
         f"Revise the {target_lang} translation of this section so it fully "
-        "addresses the editor's feedback while staying faithful to the English "
+        f"addresses the editor's feedback while staying faithful to the {SOURCE_LANGUAGE} "
         "source. It is ONE section of a larger README.\n\n"
         "Return ONLY the revised Markdown for this section -- no preamble, no "
         "explanation, and do not wrap it in a code fence.\n\n"
-        f"<english_source>\n{source_section}\n</english_source>\n\n"
+        f"<source>\n{source_section}\n</source>\n\n"
         f"<current_translation>\n{current_section}\n</current_translation>\n\n"
         f"<editor_feedback>\n{critique}\n</editor_feedback>"
     )
@@ -662,15 +659,15 @@ async def run_translation_pipeline():
 
             docs_dir = Path(PROJECT_ROOT) / "docs"
             root_readme = Path(PROJECT_ROOT) / "README.md"
-            english_readme = docs_dir / "English" / "README.md"
+            source_readme = docs_dir / SOURCE_LANGUAGE.strip().title() / "README.md"
 
-            if not english_readme.is_file():
+            if not source_readme.is_file():
                 if root_readme.is_file():
-                    english_readme.parent.mkdir(parents=True, exist_ok=True)
-                    root_readme.rename(english_readme)
-                    print(f"📦 Moved root README.md into {english_readme.relative_to(PROJECT_ROOT)}")
+                    source_readme.parent.mkdir(parents=True, exist_ok=True)
+                    root_readme.rename(source_readme)
+                    print(f"📦 Moved root README.md into {source_readme.relative_to(PROJECT_ROOT)}")
                 else:
-                    print("⚠️ No English README.md found in docs/English or the project root -- skipping directory page.")
+                    print(f"⚠️ No {SOURCE_LANGUAGE} README.md found in docs/{SOURCE_LANGUAGE.strip().title()} or the project root -- skipping directory page.")
 
             available_languages = sorted(
                 p.parent.name

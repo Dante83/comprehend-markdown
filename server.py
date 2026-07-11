@@ -4,9 +4,15 @@ Launched via run.sh (or directly by an MCP host such as LM Studio) with the
 target project's absolute path as argv[1]. Every tool below operates on that
 one fixed project root for the lifetime of this server process.
 
+The source language (what the canonical README is written in) is read from
+config.json / config.local.json via config.get_source_language(), so this
+server translates *out of* whatever language you configure -- not hardcoded to
+English. See config.py.
+
 Expected layout in the target project:
-    <root>/README.md              the canonical English source
-    <root>/docs/<lang>/README.md  translated versions, one per language code
+    <root>/README.md                       the canonical source
+    <root>/docs/<source_language>/README.md the source once migrated into docs
+    <root>/docs/<lang>/README.md           translated versions, one per language
 """
 
 import re
@@ -16,6 +22,8 @@ from pathlib import Path
 from pydantic import Field
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.prompts import base
+
+from config import get_source_language
 
 # Unicode-friendly: allow any script (needed for names like "中文", "العربية",
 # "हिन्दी"), but block path traversal by rejecting separators, leading dots,
@@ -69,8 +77,14 @@ if not PROJECT_ROOT.is_dir():
     print(f"Not a directory: {PROJECT_ROOT}", file=sys.stderr)
     sys.exit(1)
 
+# The language the source README is written in, and the docs/ folder it lives
+# in once migrated. Normalized through the same title-casing every other
+# language folder uses so docs/<source_language>/ matches the writer's output.
+SOURCE_LANGUAGE = get_source_language()
+SOURCE_LANGUAGE_DIR = _normalize_language(SOURCE_LANGUAGE)
+
 DOCS_DIR = PROJECT_ROOT / "docs"
-SOURCE_README = DOCS_DIR / "English" / "README.md"
+SOURCE_README = DOCS_DIR / SOURCE_LANGUAGE_DIR / "README.md"
 DIR_README = PROJECT_ROOT / "README.md"
 
 mcp = FastMCP("comprehend-markdown")
@@ -99,7 +113,7 @@ def write_directory_readme_tool(content: str) -> str:
 def _read_source_readme() -> str:
     if SOURCE_README.is_file():
         return SOURCE_README.read_text(encoding="utf-8")
-    # Not yet migrated into docs/English -- fall back to the root copy.
+    # Not yet migrated into docs/<source_language> -- fall back to the root copy.
     if DIR_README.is_file():
         return DIR_README.read_text(encoding="utf-8")
     raise FileNotFoundError("A README.md file could not be found in either the source or docs directory.")
@@ -150,16 +164,16 @@ def get_readme_translated_to(language):
     description="Rewrites the contents of the document in Markdown format."
 )
 def translate_readme_prompt(
-    language: str = Field(description="Language we are translating the README.md into from english.")
+    language: str = Field(description=f"Language we are translating the README.md into from {SOURCE_LANGUAGE}.")
 ) -> list[base.Message]:
     target_uri = f"docs://readme/{language}"
     source_content = _read_source_readme()
 
     prompt = f"""
         You are an expert technical translator and, where the text calls for it, a
-        skilled literary translator. Translate the English README into {language}.
+        skilled literary translator. Translate the {SOURCE_LANGUAGE} README into {language}.
 
-        Source Document (English), delimited by <source> tags:
+        Source Document ({SOURCE_LANGUAGE}), delimited by <source> tags:
         <source>
         {source_content}
         </source>
@@ -189,7 +203,7 @@ def translate_readme_prompt(
     description="Critiques the translation of the given readme file and determines if it's satisfactory."
 )
 def critique_translation_prompt(
-    language: str = Field(description="Language that we attempted to translate the README.md file into from english.")
+    language: str = Field(description=f"Language that we attempted to translate the README.md file into from {SOURCE_LANGUAGE}.")
 ) -> list[base.Message]:
     source_content = _read_source_readme()
     target_content = _read_target_readme(language)
@@ -198,9 +212,9 @@ def critique_translation_prompt(
 
     prompt = f"""
         You are a bilingual technical editor reviewing a translation of the
-        English README into {language}.
+        {SOURCE_LANGUAGE} README into {language}.
 
-        Source Document (English), delimited by <source> tags:
+        Source Document ({SOURCE_LANGUAGE}), delimited by <source> tags:
         <source>
         {source_content}
         </source>
@@ -243,7 +257,7 @@ def critique_translation_prompt(
     description="Rewrites the translation based on the critique of the reviewer."
 )
 def rewrite_translation_prompt(
-    language: str = Field(description="Language that we attempted to translate the README.md file into from english."),
+    language: str = Field(description=f"Language that we attempted to translate the README.md file into from {SOURCE_LANGUAGE}."),
     critique: str = Field(description="Requested changes made by the reviewer that you may or may not wish to implement.")
 ) -> list[base.Message]:
     target_uri = f"docs://readme/{language}"
@@ -256,7 +270,7 @@ def rewrite_translation_prompt(
         Revise the {language} translation of our README.md based on editorial
         critique.
 
-        Source Document (English), delimited by <source> tags:
+        Source Document ({SOURCE_LANGUAGE}), delimited by <source> tags:
         <source>
         {source_content}
         </source>
@@ -293,7 +307,7 @@ def rewrite_translation_prompt(
     description="Determines if existing readme needs to be udpated."
 )
 def check_if_translation_needs_update(
-    language: str = Field(description="Language we are translating the README.md into from english.")
+    language: str = Field(description=f"Language we are translating the README.md into from {SOURCE_LANGUAGE}.")
 ) -> list[base.Message]:
     source_content = _read_source_readme()
     target_content = _read_target_readme(language)
@@ -301,10 +315,10 @@ def check_if_translation_needs_update(
         target_content = "(empty -- no translation has been written yet)"
 
     prompt = f"""
-        You are a bilingual technical editor reviewing a translation of the ENGLISH 
+        You are a bilingual technical editor reviewing a translation of the {SOURCE_LANGUAGE}
         readme and comparing it to an existing {language} readme.
 
-        Source Document (English), delimited by <source> tags:
+        Source Document ({SOURCE_LANGUAGE}), delimited by <source> tags:
         <source>
         {source_content}
         </source>
@@ -331,7 +345,7 @@ def check_if_translation_needs_update(
     description="Rewrites the translation based on the critique of the reviewer."
 )
 def rewrite_from_existing_translation_prompt(
-    language: str = Field(description="Language that we attempted to translate the README.md file into from english."),
+    language: str = Field(description=f"Language that we attempted to translate the README.md file into from {SOURCE_LANGUAGE}."),
     critique: str = Field(description="Requested changes made by the reviewer that you may or may not wish to implement.")
 ) -> list[base.Message]:
     target_uri = f"docs://readme/{language}"
@@ -345,9 +359,9 @@ def rewrite_from_existing_translation_prompt(
         critique and you're own analalysis. This file has been updated and either
         requires updates, new sections or the removal of old sections. Please update
         it with the minimum number of changes needed to match updates you find in the
-        existing english readme.
+        existing {SOURCE_LANGUAGE} readme.
 
-        Source Document (English), delimited by <source> tags:
+        Source Document ({SOURCE_LANGUAGE}), delimited by <source> tags:
         <source>
         {source_content}
         </source>
@@ -397,8 +411,8 @@ def create_docs_language_directory(
         gets every reader -- regardless of what language they read -- to the
         translated README that actually serves them.
 
-        The original English README content, for reference/context only
-        (do NOT reproduce it here -- it now lives at docs/English/README.md
+        The original {SOURCE_LANGUAGE} README content, for reference/context only
+        (do NOT reproduce it here -- it now lives at docs/{SOURCE_LANGUAGE_DIR}/README.md
         and is one of the links below):
         <source>
         {dir_source_content}
@@ -408,15 +422,15 @@ def create_docs_language_directory(
         {link_lines}
 
         Instructions:
-        1. Write a short intro line in English (a sentence or two, e.g. project
-           name/one-line description) so English readers immediately recognize
+        1. Write a short intro line in {SOURCE_LANGUAGE} (a sentence or two, e.g. project
+           name/one-line description) so {SOURCE_LANGUAGE} readers immediately recognize
            the project.
-        2. Below a simple English instruction intro, render the language list as a single Markdown list
+        2. Below a simple {SOURCE_LANGUAGE} instruction intro, render the language list as a single Markdown list
            with exactly one entry per language: each entry is a short
            welcoming sentence written IN that language itself (e.g. the
            Spanish entry written in Spanish, the Japanese entry written in
            Japanese) ending with its link, so every reader can spot their own
-           language by eye without needing to read English first. Do not
+           language by eye without needing to read {SOURCE_LANGUAGE} first. Do not
            produce a second, separate list of the same links.
         3. Feel free to prefix each entry with a fitting flag/region emoji
            where one exists, but do not invent inaccurate flags for languages

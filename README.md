@@ -8,18 +8,24 @@ An MCP server that translates a project's `README.md` into other languages,
 plus a standalone pipeline that runs a writer/reviewer loop against it using
 a local LM Studio model.
 
+The source and target languages are both configurable — English is only the
+default. Set `source_language` to translate *out of* Chinese, Indonesian, or
+anything else, and `target_languages` to choose what it fans out into (see
+[Choosing source and target languages](#choosing-source-and-target-languages)).
+
 For any target project, it expects (and creates as needed):
 
 ```
-<project-root>/docs/English/README.md  the canonical English source
-<project-root>/docs/<lang>/README.md   translated versions, one per language
-<project-root>/README.md               language-picker landing page (generated)
+<project-root>/docs/<source>/README.md  the canonical source (English by default)
+<project-root>/docs/<lang>/README.md    translated versions, one per language
+<project-root>/README.md                language-picker landing page (generated)
 ```
 
-A project that hasn't been migrated yet — English source still at the root —
+A project that hasn't been migrated yet — source still at the root —
 works too: the root `README.md` is used as the source, and at the end of a
-`pipeline` run it is moved into `docs/English/` and replaced by a short
-generated landing page that links every available translation.
+`pipeline` run it is moved into `docs/<source>/` (e.g. `docs/English/`) and
+replaced by a short generated landing page that links every available
+translation.
 
 ## Setup
 
@@ -38,6 +44,31 @@ cp config.local.json.example config.local.json
 `config.local.json` is gitignored and overrides `config.json` key-by-key, so
 you can tweak `lm_studio_url` / `model_name` / `api_key` locally without
 touching the committed defaults.
+
+### Choosing source and target languages
+
+Two config keys control the translation direction, and both the server and the
+pipeline read them (from `config.py`), so they never disagree:
+
+- **`source_language`** — the language your canonical `README.md` is written
+  in, and the name of its `docs/<source_language>/` folder. Defaults to
+  `"English"`. Set it to `"中文"`, `"Bahasa Indonesia"`, or anything else to
+  translate *out of* that language instead.
+- **`target_languages`** — the list the pipeline translates *into*. Any entry
+  equal to `source_language` is skipped automatically, so leaving the source in
+  the list is harmless.
+
+For example, to translate a Chinese README into English and Spanish:
+
+```json
+{
+  "source_language": "中文",
+  "target_languages": ["English", "Español"]
+}
+```
+
+If `target_languages` is omitted, the pipeline falls back to its built-in
+18-language list.
 
 `api_key` only matters if you've turned on "Require API Key" under LM
 Studio's Developer server settings — otherwise leave it as `"lm-studio"`,
@@ -74,7 +105,7 @@ It exposes:
 - **tool** `write_readme(language, content)` — writes `docs/<language>/README.md`
 - **tool** `write_directory_readme(content)` — writes the root `README.md`
   (the language-picker landing page)
-- **resource** `docs://readme` — the English source (`docs/English/README.md`,
+- **resource** `docs://readme` — the source (`docs/<source_language>/README.md`,
   falling back to the root `README.md`)
 - **resource** `docs://readme/{language}` — the existing translation, if any
 - **resource** `docs://dir_readme` — the root `README.md`
@@ -82,7 +113,7 @@ It exposes:
   `rewrite_translation` — the fresh-translation loop
 - **prompts** `check_existing_readme`, `rewrite_from_existing_translation` —
   the update path: compare an existing translation against the current
-  English source and patch it with minimal changes
+  source and patch it with minimal changes
 - **prompt** `create_docs_language_directory` — build the root
   language-picker page from the list of available translations
 
@@ -114,10 +145,12 @@ project you mean to translate.
 
 ### `pipeline` — standalone, no MCP host
 
-Runs the full translate → critique → revise loop itself for a fixed list of
-18 languages (Deutsch, Español, Français, Italiano, Polski, Português,
-Русский, Tiếng Việt, ไทย, 中文, 日本語, 한국어, العربية, हिन्दी, বাংলা,
-Bahasa Indonesia, اردو, Naijá — edit `LANGUAGES` in `main.py` to change),
+Runs the full translate → critique → revise loop itself for the configured
+`target_languages` (default list of 18: Deutsch, Español, Français, Italiano,
+Polski, Português, Русский, Tiếng Việt, ไทย, 中文, 日本語, 한국어, العربية,
+हिन्दी, বাংলা, Bahasa Indonesia, اردو, Naijá — see
+[Choosing source and target languages](#choosing-source-and-target-languages)
+to change the list or the source language),
 calling LM Studio's OpenAI-compatible endpoint directly for the
 writer/reviewer turns and spawning its own internal copy of `server.py`
 over stdio to do the file I/O. Useful for batch-translating without driving
@@ -127,13 +160,13 @@ chunked one.
 
 Languages that already have a `docs/<language>/README.md` aren't
 re-translated from scratch: the reviewer compares the existing translation
-against the current English source and, only if something changed, the
+against the current source and, only if something changed, the
 writer patches it with minimal edits. Up-to-date translations are skipped
 entirely, so re-running the pipeline after a README edit only redoes the
 stale parts.
 
 After the per-language work, the run finishes by (if needed) moving a
-root-level English `README.md` into `docs/English/` and regenerating the
+root-level source `README.md` into `docs/<source_language>/` and regenerating the
 root `README.md` as a short language-picker page linking every non-empty
 translation.
 
@@ -171,7 +204,7 @@ tail silently truncates. `pipeline` mode is built around avoiding that:
 - **Per-section review** — with `review_sections` `true` (the default), each
   section runs the same critique→revise loop the single-shot path uses, just
   scoped to that one section: the reviewer compares the translated section to
-  its English source and the writer revises until the reviewer agrees (or
+  its source and the writer revises until the reviewer agrees (or
   `MAX_ITERATIONS` is hit). Because a section is small, review and rewrite stay
   well clear of the truncation ceiling that made whole-document review of a big
   README unsafe.
